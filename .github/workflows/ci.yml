@@ -22,4 +22,12 @@ jobs:
       - name: Check outcome ↔ test pairing
         run: python scripts/check_pairing.py
       - name: Run tests
-        run: pytest
+        run: |
+          set +e
+          pytest
+          code=$?
+          if [ "$code" = "5" ]; then
+            echo "No tests collected yet (pytest exit code 5) — treating as OK for baseline only."
+            exit 0
+          fi
+          exit "$code"
