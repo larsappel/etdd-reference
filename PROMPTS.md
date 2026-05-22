@@ -12,7 +12,7 @@ The program's contract-author role has no per-feature CLI-side analogue here; th
 
 | Feature | Outcome-document-author | Test-author | Implementation-author | Breaker |
 |---------|-------------------------|-------------|------------------------|---------|
-| `borrow` | _to be filled at G5a close_ | _to be filled at G5a close_ | _to be filled at G5a close_ | _G5b_ |
+| `borrow` | `etdd-spec-author-borrow` | `etdd-test-author-borrow` | `etdd-drafter-borrow` | _G5b_ |
 | `return` | _G5b_ | _G5b_ | _G5b_ | _G5b_ |
 | `<third feature>` | _G5b_ | _G5b_ | _G5b_ | _G5b_ |
 
