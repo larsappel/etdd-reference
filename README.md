@@ -52,7 +52,11 @@ CLI entry point is wired per feature as outcomes land; see `pyproject.toml` `[pr
 
 ## Adversarial pass
 
-At least one feature receives an adversarial (breaker) pass per Pattern 5 of `01-implementation-patterns.md`. The result is recorded at `docs/process/breaker-<feature>.md` regardless of whether a break was found. The feature chosen and the result are named here once the breaker has run (G5b).
+Pattern 5 (adversarial / red-team agent, per `01-implementation-patterns.md`) ran against the `overdue` feature in G5b. **Verdict: break found.** A fourth distinct agent identity (`etdd-breaker-overdue`) exhibited an alternative `overdue` implementation that passed all 12 existing tests while violating the outcome's intent on four axes — fabricated `borrowed_at` values, calls to `datetime.utcnow()` whose result was discarded, non-deterministic order via `random.shuffle`, and transient mutation of ledger records during the call.
+
+The follow-up closed the gap. `etdd-spec-author-overdue-revise` added an `## After adversarial review` section to `specs/outcomes/overdue.md` pinning the four properties as explicit negative predicates. `etdd-test-author-overdue-revise` then added four test probes — one per predicate — so the suite catches future regression rather than only another adversarial pass. The current implementation already satisfied all four predicates; no code change was needed.
+
+Full breaker report (verbatim attack vector, alternative implementation, why each existing test missed the violation, recommended fix shape): [`docs/process/breaker-overdue.md`](./docs/process/breaker-overdue.md).
 
 ## License + regenerability
 
