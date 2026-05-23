@@ -2,7 +2,7 @@
 outcome: overdue
 status: locked
 created: 2026-05-22
-updated: 2026-05-22
+updated: 2026-05-23
 co_specifier: lars-appel
 spec_author: etdd-spec-author-feature3
 free_dimensions:
@@ -70,3 +70,17 @@ The five axes named in the frontmatter are granted to the test-author and implem
 - **Idempotency and repeatability.** The call is a pure read. Two consecutive calls with the same ledger state, the same moment asked, and the same loan-period yield equal answers. The call mutates nothing the next call could observe. Repeatability is not a separate constraint to enforce; it is a property of the function being a read.
 
 - **The moment a loan becomes overdue.** Inclusive at the due-date boundary. A loan whose due-date is exactly equal to the moment asked, to the precision the system records times at, is overdue. The comparison is `due_date <= as_of`, equivalently `borrowed_at + loan_period <= as_of`. The `<=` (or `>=` from the as_of side) is load-bearing and is the boundary the practitioner guide's worked example treats as its canonical edge.
+
+## After adversarial review
+
+A breaker pass against this outcome on 2026-05-23 produced a passing-but-intent-violating implementation: a 12-of-12 green alternative that echoed identity keys with fabricated values, read a forbidden clock, randomised the output order, and transiently mutated ledger records during the call. The break is recorded in `docs/process/breaker-overdue.md`, which also archives the verbatim adversarial code; that code is not recapitulated here, because the outcome is for intent and not for adversarial samples. The four predicates below close the gap by stating explicitly what the prose above already implied. They are negative predicates — properties an implementation must not have — and they sit alongside the named edge cases as additional constraints the test suite is expected to pin.
+
+- **Identity values match the source record.** Each listed loan's `book_id`, `borrower_id`, and `borrowed_at` values are equal to the corresponding values on the open-loan record the ledger holds for that loan. The keys are not fabricable: an implementation that emits the right keys with values invented by the call — a placeholder `borrowed_at`, a redacted identifier, a sentinel timestamp — does not satisfy the outcome. The values are part of the loan's identity, not packaging the call is free to rewrite. The "carry the same identity the loan record already had" phrasing in the named edge cases above constrains the values as well as the keys.
+
+- **No clock reads of any kind.** The function does not call `datetime.utcnow()`, `datetime.now()`, `time.time()`, `time.monotonic()`, or any other process-wide time source, even when the result is discarded. The `as_of` argument is the sole moment the function is permitted to know about. A call that reads a clock and ignores the result is ruled out: the prohibition is on the read itself, not on the read affecting the answer, because the read couples the function to global state it has no warrant to observe and breaks the projection-query property the prose above relies on.
+
+- **Order is deterministic.** Two calls with the same ledger state, the same `as_of`, and the same `loan_period` return the overdue loans in the same order. The order itself remains a free dimension — the `sort-order-of-listed-loans` axis is unchanged — but the determinism within that axis is not free. A call that randomises order, or that emits results in an order determined by iteration over a non-deterministic data structure, fails the outcome even when the set of listed loans is correct. Set equality is necessary but not sufficient.
+
+- **No transient mutation during the call.** During the call, no key is added to, removed from, or modified on any ledger record, even if the modification is reverted before the call returns. A concurrent observer of the ledger during the call sees records in the state they held before the call began. The "mutates nothing" constraint above applies to the call's full duration, not only to the call's net effect; the call is a read, and a read does not write and immediately un-write.
+
+The current implementation at `src/library_loan/overdue.py` already satisfies all four predicates as a property of its construction: it copies records via `dict(...)` before adding the computed `due_at`, it imports no clock or random module, and it performs no in-place mutation on the ledger's records. The follow-up commit therefore does not require an implementation change. A separate `etdd-test-author-overdue-revise` dispatch will add test probes pinning these predicates so the suite captures them per Principle 7.
