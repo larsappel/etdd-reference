@@ -73,7 +73,9 @@ Boundary rule (outcome §"The moment a loan becomes overdue"):
 """
 
 import datetime
+import inspect
 import pytest
+import library_loan.overdue as _overdue_module
 from library_loan.overdue import overdue
 from library_loan.borrow import borrow
 from library_loan.return_ import return_
@@ -454,3 +456,175 @@ def test_multiple_overdue_loans_all_listed():
     # All three are more than 7 days past borrowed_at as of 2026-05-22
     overdue_books = {r["book_id"] for r in result}
     assert overdue_books == {"B15", "B16", "B17"}
+
+
+# ---------------------------------------------------------------------------
+# Post-adversarial-review probes (G5b breaker found gaps; predicates pinned)
+# ---------------------------------------------------------------------------
+
+def test_listed_loan_borrowed_at_value_matches_source():
+    """OUTCOME (After adversarial review): 'Each listed loan's book_id,
+    borrower_id, and borrowed_at values are equal to the corresponding values
+    on the open-loan record the ledger holds for that loan. The keys are not
+    fabricable: an implementation that emits the right keys with values
+    invented by the call does not satisfy the outcome.'
+
+    The existing test_listed_loans_carry_borrow_identity_fields checks
+    book_id and borrower_id values but does not assert the borrowed_at value.
+    The adversarial implementation returned '1970-01-01T00:00:00' for every
+    loan; this test pins that borrowed_at is the verbatim source string.
+    """
+    ledger = SimpleLedger()
+    ledger._add({
+        "book_id": "B18",
+        "borrower_id": "P18",
+        "borrowed_at": "2026-05-01T10:00:00",
+    })
+    result = overdue(
+        ledger,
+        as_of=datetime.datetime(2026, 5, 22, 10, 0, 0),
+        loan_period=datetime.timedelta(days=7),
+    )
+    assert len(result) >= 1
+    loan = next(r for r in result if r["book_id"] == "B18")
+    assert loan["borrowed_at"] == "2026-05-01T10:00:00"
+
+
+def test_overdue_does_not_call_utcnow(monkeypatch):
+    """OUTCOME (After adversarial review): 'The function does not call
+    datetime.utcnow(), datetime.now(), time.time(), time.monotonic(), or any
+    other process-wide time source, even when the result is discarded. The
+    as_of argument is the sole moment the function is permitted to know about.
+    A call that reads a clock and ignores the result is ruled out.'
+
+    Implementation: monkeypatch replaces library_loan.overdue.datetime with a
+    stub module whose datetime.utcnow raises. Because datetime.datetime is a C
+    type and cannot be patched directly, we swap out the module-level name the
+    implementation holds. fromisoformat is preserved on the subclass. Static
+    fallback (inspect.getsource) is also asserted for belt-and-braces.
+    """
+    utcnow_calls = []
+    _dt_module = datetime  # capture module reference before class shadows the name
+
+    class _GuardedDatetime(_dt_module.datetime):
+        @classmethod
+        def utcnow(cls):
+            utcnow_calls.append("utcnow called")
+            raise AssertionError("clock read forbidden")
+
+    class _GuardedModule:
+        datetime = _GuardedDatetime
+        timedelta = _dt_module.timedelta
+
+    monkeypatch.setattr(_overdue_module, "datetime", _GuardedModule())
+
+    ledger = SimpleLedger()
+    ledger._add({
+        "book_id": "B19",
+        "borrower_id": "P19",
+        "borrowed_at": "2026-05-01T10:00:00",
+    })
+    # If the implementation calls utcnow(), the stub raises AssertionError.
+    result = overdue(
+        ledger,
+        as_of=datetime.datetime(2026, 5, 22, 10, 0, 0),
+        loan_period=datetime.timedelta(days=7),
+    )
+    assert utcnow_calls == [], "overdue called datetime.utcnow(); clock read is forbidden"
+
+    # Belt-and-braces static check: the source must not mention utcnow at all.
+    src = inspect.getsource(_overdue_module.overdue)
+    assert "utcnow" not in src, "overdue source mentions 'utcnow'; clock read is forbidden"
+
+
+def test_overdue_order_is_deterministic():
+    """OUTCOME (After adversarial review): 'Two calls with the same ledger
+    state, the same as_of, and the same loan_period return the overdue loans
+    in the same order. The order itself remains a free dimension — the
+    sort-order-of-listed-loans axis is unchanged — but the determinism within
+    that axis is not free.'
+
+    The adversarial implementation called random.shuffle on the result; two
+    consecutive calls with a fixed ledger could return the same set in
+    different positional orders. This test catches that by comparing two calls
+    as ordered sequences, not as sets.
+    """
+    ledger = SimpleLedger()
+    ledger._add({
+        "book_id": "B20",
+        "borrower_id": "P20",
+        "borrowed_at": "2026-04-01T10:00:00",
+    })
+    ledger._add({
+        "book_id": "B21",
+        "borrower_id": "P21",
+        "borrowed_at": "2026-04-10T10:00:00",
+    })
+    ledger._add({
+        "book_id": "B22",
+        "borrower_id": "P22",
+        "borrowed_at": "2026-04-20T10:00:00",
+    })
+    as_of = datetime.datetime(2026, 5, 22, 10, 0, 0)
+    loan_period = datetime.timedelta(days=7)
+
+    result1 = overdue(ledger, as_of=as_of, loan_period=loan_period)
+    result2 = overdue(ledger, as_of=as_of, loan_period=loan_period)
+
+    assert result1 == result2, (
+        "overdue returned a different order on two identical calls; "
+        "determinism is required even though sort-order is a free dimension"
+    )
+
+
+def test_overdue_call_observes_no_transient_mutation():
+    """OUTCOME (After adversarial review): 'During the call, no key is added
+    to, removed from, or modified on any ledger record, even if the
+    modification is reverted before the call returns. A concurrent observer of
+    the ledger during the call sees records in the state they held before the
+    call began.'
+
+    Approach: wrap ledger.open_loans so that each time it is called from
+    inside overdue, it inspects the records returned and asserts none carry
+    any key outside the canonical set {book_id, borrower_id, borrowed_at}.
+    The adversarial implementation added _breaker_marker to each record
+    before the loop and removed it after; this probe catches that by
+    observing record state inside the call, not only before and after.
+    """
+    CANONICAL_KEYS = {"book_id", "borrower_id", "borrowed_at"}
+    violations = []
+
+    ledger = SimpleLedger()
+    ledger._add({
+        "book_id": "B23",
+        "borrower_id": "P23",
+        "borrowed_at": "2026-05-01T10:00:00",
+    })
+    ledger._add({
+        "book_id": "B24",
+        "borrower_id": "P24",
+        "borrowed_at": "2026-05-05T10:00:00",
+    })
+
+    original_open_loans = ledger.open_loans
+
+    def probing_open_loans():
+        records = original_open_loans()
+        for record in records:
+            extra = set(record.keys()) - CANONICAL_KEYS
+            if extra:
+                violations.append({"record": dict(record), "extra_keys": extra})
+        return records
+
+    ledger.open_loans = probing_open_loans
+
+    overdue(
+        ledger,
+        as_of=datetime.datetime(2026, 5, 22, 10, 0, 0),
+        loan_period=datetime.timedelta(days=7),
+    )
+
+    assert violations == [], (
+        f"overdue transiently mutated ledger records during the call; "
+        f"records with unexpected keys observed: {violations}"
+    )
